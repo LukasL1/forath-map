@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forath Dungeon Generator</title>
+<style>
+:root {
+  --bg: #11161a; --surface: #182027; --fg: #e7e2d6; --muted: #98a29e; --line: #2a343b;
+  --accent: #d9a441; --proto: #6cbca8; --cell: #26313a; --cell-main: #3a4a53;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--muted); font: 13px/1.4 ui-monospace, Consolas, Menlo, monospace; display: flex; flex-direction: column; gap: 8px; padding: 10px; }
+canvas { flex: 1; min-height: 0; width: 100%; object-fit: contain; display: block; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; }
+.bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 14px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.legend i { display: inline-block; width: 10px; height: 10px; margin-right: 5px; vertical-align: -1px; border-radius: 2px; }
+#seed { color: var(--fg); }
+button { font: inherit; color: var(--accent); background: transparent; border: 1px solid var(--accent); border-radius: 3px; padding: 6px 10px; margin-left: 8px; cursor: pointer; }
+button:hover { background: rgba(217,164,65,.14); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<canvas id="dungeon" width="880" height="640" aria-label="A procedurally generated dungeon layout"></canvas>
+<div class="bar">
+  <span class="legend">
+    <span><i style="background:var(--proto)"></i>Entrance</span>
+    <span><i style="background:var(--cell-main)"></i>Main path</span>
+    <span><i style="background:var(--cell)"></i>Branch</span>
+    <span><i style="background:var(--accent)"></i>Boss</span>
+  </span>
+  <span>Seed <b id="seed">0000</b><button id="reroll" type="button">New seed</button></span>
+</div>
+<script>
+(function () {
+  const canvas = document.getElementById('dungeon');
+  const ctx = canvas.getContext('2d');
+  const seedEl = document.getElementById('seed');
+  const COLS = 11, ROWS = 8, DIRS = [[0,-1],[1,0],[0,1],[-1,0]];
+  let seed = 4127;
+
+  function rng(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+  const key = (x, y) => x + ',' + y;
+  const inside = (x, y) => x >= 0 && y >= 0 && x < COLS && y < ROWS;
+
+  function generate(s) {
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const r = rng(s + attempt * 7919);
+      const cells = new Map(), links = [];
+      const start = [1, Math.floor(ROWS / 2)];
+      const target = 9 + Math.floor(r() * 4);
+      const path = [start];
+      cells.set(key(...start), 'entrance');
+      let steps = 0;
+      while (path.length < target && steps++ < 400) {
+        const [x, y] = path[path.length - 1];
+        const open = DIRS.map(([dx, dy]) => [x + dx, y + dy]).filter(([nx, ny]) => inside(nx, ny) && !cells.has(key(nx, ny)));
+        if (!open.length) {
+          if (path.length === 1) break;
+          cells.delete(key(...path.pop())); links.pop(); continue;
+        }
+        // bias the walk away from the entrance
+        open.sort((a, b) => (b[0] - a[0]) + (r() - 0.5) * 3);
+        const next = r() < 0.6 ? open[0] : open[Math.floor(r() * open.length)];
+        cells.set(key(...next), 'main'); links.push([[x, y], next]); path.push(next);
+      }
+      if (path.length < target) continue;
+      cells.set(key(...path[path.length - 1]), 'boss');
+      for (let i = 1; i < path.length - 1; i++) {
+        if (r() > 0.45) continue;
+        let cur = path[i], len = 1 + Math.floor(r() * 3);
+        for (let j = 0; j < len; j++) {
+          const open = DIRS.map(([dx, dy]) => [cur[0] + dx, cur[1] + dy]).filter(([nx, ny]) => inside(nx, ny) && !cells.has(key(nx, ny)));
+          if (!open.length) break;
+          const n = open[Math.floor(r() * open.length)];
+          cells.set(key(...n), 'branch'); links.push([cur, n]); cur = n;
+        }
+      }
+      return { cells, links };
+    }
+    return { cells: new Map(), links: [] };
+  }
+
+  function draw() {
+    const css = getComputedStyle(document.documentElement);
+    const c = n => css.getPropertyValue(n).trim();
+    const { cells, links } = generate(seed);
+    seedEl.textContent = String(seed).padStart(4, '0');
+    const W = canvas.width, H = canvas.height, pad = 30;
+    const size = Math.min((W - pad * 2) / COLS, (H - pad * 2) / ROWS);
+    const ox = (W - size * COLS) / 2, oy = (H - size * ROWS) / 2, gap = size * 0.18;
+    ctx.fillStyle = c('--surface'); ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = c('--line');
+    for (let x = 0; x < COLS; x++) for (let y = 0; y < ROWS; y++) ctx.fillRect(ox + x * size + size / 2 - 1.5, oy + y * size + size / 2 - 1.5, 3, 3);
+    const fill = { entrance: c('--proto'), main: c('--cell-main'), branch: c('--cell'), boss: c('--accent') };
+    for (const [[ax, ay], [bx, by]] of links) {
+      ctx.fillStyle = c('--cell-main');
+      const cx = ox + (ax + bx + 1) / 2 * size, cy = oy + (ay + by + 1) / 2 * size, d = size * 0.22;
+      ctx.fillRect(cx - d / 2, cy - d / 2, d, d);
+    }
+    for (const [k, type] of cells) {
+      const [x, y] = k.split(',').map(Number);
+      ctx.fillStyle = fill[type];
+      ctx.fillRect(ox + x * size + gap / 2, oy + y * size + gap / 2, size - gap, size - gap);
+    }
+  }
+
+  document.getElementById('reroll').addEventListener('click', () => { seed = Math.floor(Math.random() * 10000); draw(); });
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+  new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(draw);
+  draw();
+})();
+</script>
+</body>
+</html>
